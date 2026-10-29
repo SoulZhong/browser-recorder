@@ -1,0 +1,122 @@
+/* 设计令牌与通用构件。
+   弹窗与素材库共用这一份——两个页面各写各的颜色，迟早漂移。
+   基调是"仪器面板"：深色底、红色作为唯一强调色（=录制）、数字一律等宽、
+   分组标签靠字距而不是字号拉开层级。 */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0E0F13;
+  --bg-2: #131620;
+  --panel: #171A22;
+  --panel-2: #1E222C;
+  --panel-3: #262B36;
+  --line: #262B36;
+  --line-soft: #1F232D;
+
+  --text: #E9EBF0;
+  --muted: #7E8697;
+  --dim: #5B6273;
+
+  --accent: #FF3B4E;
+  --accent-soft: rgba(255, 59, 78, .13);
+  --accent-line: rgba(255, 59, 78, .38);
+  --accent-text: #FFC3C9;
+  --amber: #F0B429;
+  --amber-soft: rgba(240, 180, 41, .13);
+
+  --r: 10px;
+  --r-sm: 7px;
+
+  --font: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  color: var(--text);
+  font: 400 13px/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 数字一律等宽，跳动的秒数和体积不该让布局抖 */
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* 分组标签：字距拉开，不靠加粗 */
+.glabel {
+  display: block;
+  font-size: 10px; letter-spacing: .16em; color: var(--muted);
+}
+
+/* ── 按钮 ── */
+.btn {
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+  border-radius: var(--r); padding: 10px 0; cursor: pointer;
+  font: 500 12.5px/1 var(--font);
+  transition: background .14s, border-color .14s, color .14s;
+}
+.btn:hover { background: var(--panel-3); }
+.btn.primary {
+  border-color: transparent; color: #fff; font-weight: 600;
+  background: linear-gradient(180deg, #FF4A5C, #E0293C);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18);
+}
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.btn.ghost:hover { color: var(--text); background: var(--panel-2); }
+.btn.danger:hover { border-color: var(--accent-line); color: var(--accent-text); }
+
+.icon-btn {
+  display: grid; place-items: center; width: 30px; height: 30px; flex: none;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: var(--panel); color: var(--muted); cursor: pointer;
+  transition: color .14s, background .14s, border-color .14s;
+}
+.icon-btn:hover { color: var(--text); background: var(--panel-2); border-color: #313745; }
+
+.link {
+  border: 0; background: none; cursor: pointer;
+  color: var(--muted); font: 400 11.5px/1 var(--font); padding: 5px 6px; border-radius: 6px;
+}
+.link:hover { color: var(--text); background: var(--panel-2); }
+.link.danger:hover { color: var(--accent-text); background: var(--accent-soft); }
+
+/* ── 表单 ── */
+select {
+  appearance: none; width: 100%;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+  padding: 5px 22px 5px 8px; font: 500 11.5px/1.3 var(--font); cursor: pointer;
+  text-overflow: ellipsis;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='6' viewBox='0 0 9 6'%3E%3Cpath d='M1 1l3.5 3.5L8 1' stroke='%237E8697' stroke-width='1.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 7px center;
+}
+select:hover { border-color: #333947; }
+select:focus-visible { outline: none; border-color: var(--accent-line); }
+
+/* ── 录制指示灯 ── */
+.live-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft); animation: rec-pulse 1.6s ease-in-out infinite;
+}
+.live-dot.paused { background: var(--muted); box-shadow: none; animation: none; }
+@keyframes rec-pulse { 50% { opacity: .3; } }
+
+/* ── 提示 ── */
+.msg {
+  padding: 7px 9px; border-radius: 8px; font-size: 11.5px; line-height: 1.5;
+  background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent-text);
+}
+.msg.warn { background: var(--amber-soft); border-color: rgba(240, 180, 41, .3); color: var(--amber); }
+
+/* ── 存储条 ── */
+.meter-bar { height: 3px; border-radius: 2px; background: var(--panel-2); overflow: hidden; }
+.meter-bar > i {
+  display: block; height: 100%; border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), #FF7A86);
+  transition: width .3s ease;
+}
+
+[hidden] { display: none !important; }

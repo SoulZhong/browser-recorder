@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>素材库</title>
+<link rel="stylesheet" href="../ui/theme.css">
+<link rel="stylesheet" href="player.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <b>素材库</b>
+      <span class="crumb" id="crumb"></span>
+    </div>
+    <div class="topbar-right">
+      <span class="local" title="录像与截图全部存放在浏览器本地 IndexedDB，不会上传到任何服务器">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
+        仅存本机
+      </span>
+      <div class="usage">
+        <span id="usageText" class="num">统计中…</span>
+        <div class="meter-bar"><i id="usageBar" style="width:0"></i></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- 素材面板 -->
+  <aside class="panel bin">
+    <div class="panel-head">
+      <span class="glabel">素材</span>
+      <span class="num head-count" id="binCount"></span>
+    </div>
+    <div class="list-bar" id="listBar" hidden>
+      <label class="pick-all">
+        <input type="checkbox" id="pickAll">
+        <span id="pickText">全选</span>
+      </label>
+      <div class="bulk" id="bulk" hidden>
+        <button class="btn sm" id="bulkDownload">下载</button>
+        <button class="btn sm danger" id="bulkDelete">删除</button>
+      </div>
+    </div>
+    <div class="list" id="list"></div>
+  </aside>
+
+  <!-- 监视器 -->
+  <main class="panel viewer">
+    <div class="panel-head">
+      <span class="glabel">预览</span>
+      <span class="viewer-name" id="viewerName"></span>
+      <span class="spec num" id="viewerSpec"></span>
+    </div>
+    <div class="monitor" id="monitor">
+      <div class="stage" id="stage" hidden>
+        <video id="video" playsinline preload="auto"></video>
+        <div class="shot-wrap" id="shotWrap" hidden><img id="shot" alt=""></div>
+      </div>
+      <div class="empty" id="empty">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="5" width="15" height="14" rx="2"/><path d="M17.5 10l4-2.5v9l-4-2.5"/></svg>
+        <span>还没有内容</span>
+        <small>点击工具栏的扩展图标开始录制或截图</small>
+      </div>
+    </div>
+    <div class="transport" id="transport" hidden>
+      <span class="tc num" id="tcNow">00:00.00</span>
+      <div class="transport-mid">
+        <button class="tbtn" id="tHome" title="跳到开头（Home）" aria-label="跳到开头">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="2.2" height="14" rx=".6"/><path d="M19 6.2v11.6a.8.8 0 01-1.2.7L9.4 12.7a.8.8 0 010-1.4l8.4-5.8a.8.8 0 011.2.7z"/></svg>
+        </button>
+        <button class="tbtn" id="tBack" title="后退 1 秒（Shift + ←）" aria-label="后退 1 秒">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11 6.6v10.8a.7.7 0 01-1.1.6L2.6 12.6a.7.7 0 010-1.2l7.3-5.4a.7.7 0 011.1.6zM21 6.6v10.8a.7.7 0 01-1.1.6l-7.3-5.4a.7.7 0 010-1.2l7.3-5.4a.7.7 0 011.1.6z"/></svg>
+        </button>
+        <button class="tbtn play" id="tPlay" title="播放 / 暂停（空格）" aria-label="播放">
+          <svg class="i-play" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8v14.4a1 1 0 001.5.9l11.3-7.2a1 1 0 000-1.8L8.5 3.9A1 1 0 007 4.8z"/></svg>
+          <svg class="i-pause" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4.5" width="4" height="15" rx="1"/><rect x="14" y="4.5" width="4" height="15" rx="1"/></svg>
+        </button>
+        <button class="tbtn" id="tFwd" title="前进 1 秒（Shift + →）" aria-label="前进 1 秒">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 6.6v10.8a.7.7 0 001.1.6l7.3-5.4a.7.7 0 000-1.2L4.1 6a.7.7 0 00-1.1.6zM13 6.6v10.8a.7.7 0 001.1.6l7.3-5.4a.7.7 0 000-1.2L14.1 6a.7.7 0 00-1.1.6z"/></svg>
+        </button>
+        <button class="tbtn" id="tEnd" title="跳到结尾（End）" aria-label="跳到结尾">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="16.8" y="5" width="2.2" height="14" rx=".6"/><path d="M5 6.2v11.6a.8.8 0 001.2.7l8.4-5.8a.8.8 0 000-1.4L6.2 5.5A.8.8 0 005 6.2z"/></svg>
+        </button>
+      </div>
+      <div class="transport-right">
+        <span class="tc num dim" id="tcDur">00:00.00</span>
+        <button class="tbtn" id="tMute" title="静音（M）" aria-label="静音">
+          <svg class="i-vol" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" stroke="none"/><path d="M15.5 9a4.2 4.2 0 010 6M18.2 6.5a8 8 0 010 11"/></svg>
+          <svg class="i-mute" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" stroke="none"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>
+        </button>
+        <button class="tbtn" id="tFull" title="全屏（F）" aria-label="全屏">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <!-- 检查器 -->
+  <aside class="panel inspector">
+    <div class="panel-head"><span class="glabel">属性</span></div>
+    <div class="insp" id="insp" hidden>
+      <div class="insp-title">
+        <input id="title" aria-label="标题" spellcheck="false">
+      </div>
+      <dl class="props" id="props"></dl>
+      <div class="notes" id="stageMeta"></div>
+
+      <section class="insp-trim" id="trimPanel" hidden>
+        <div class="sec-head">
+          <span class="glabel">修剪</span>
+          <span class="trim-chip">关键帧对齐 · 无损</span>
+        </div>
+        <dl class="props trim-props">
+          <dt>入点</dt><dd class="num" id="trimStartText">00:00.00</dd>
+          <dt>出点</dt><dd class="num" id="trimEndText">00:00.00</dd>
+          <dt>保留</dt><dd class="num strong" id="trimKeepText">00:00.00</dd>
+          <dt>预计大小</dt><dd class="num" id="trimSizeText">0 B</dd>
+        </dl>
+        <div class="msg warn" id="trimSnap" hidden></div>
+        <div class="msg" id="trimMsg" hidden></div>
+        <div class="trim-actions">
+          <button class="btn primary" id="trimSave">另存为新素材</button>
+          <button class="btn danger" id="trimReplace">替换原录像</button>
+          <button class="btn ghost" id="trimCancel">取消修剪</button>
+        </div>
+      </section>
+
+      <div class="insp-actions" id="inspActions">
+        <button class="btn primary" id="download">下载</button>
+        <button class="btn" id="copy" hidden>复制图片</button>
+        <button class="btn danger" id="delete">删除</button>
+      </div>
+    </div>
+    <div class="insp-empty" id="inspEmpty">选择一个素材查看属性</div>
+  </aside>
+
+  <!-- 时间轴 -->
+  <section class="panel timeline" id="timeline">
+    <div class="tl-toolbar">
+      <span class="glabel">时间轴</span>
+      <button class="tool" id="trim" aria-pressed="false" title="修剪：设定入点和出点（I / O）" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12"/></svg>
+        修剪
+      </button>
+      <span class="tl-sep"></span>
+      <button class="tool" id="trimSetStart" title="把入点设在播放头（I）" disabled><kbd>I</kbd>设入点</button>
+      <button class="tool" id="trimSetEnd" title="把出点设在播放头（O）" disabled><kbd>O</kbd>设出点</button>
+      <button class="tool" id="trimPreview" title="只播放入点到出点这一段" disabled>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8v14.4a1 1 0 001.5.9l11.3-7.2a1 1 0 000-1.8L8.5 3.9A1 1 0 007 4.8z"/></svg>
+        试看选区
+      </button>
+      <span class="tl-spacer"></span>
+      <span class="tl-hint" id="tlHint">空格 播放 · ← → 微调 · I / O 设入出点</span>
+    </div>
+    <div class="tl-body" id="tlBody">
+      <div class="tl-heads">
+        <div class="ruler-head"></div>
+        <div class="lane-head"><b>V1</b><span>视频</span></div>
+        <div class="lane-head"><b>A1</b><span>音频</span></div>
+      </div>
+      <div class="tl-tracks" id="trimTrack">
+        <div class="ruler" id="ruler"></div>
+        <div class="lane">
+          <div class="clip video" id="clipVideo"><div class="filmstrip" id="filmstrip"></div><span class="clip-name" id="clipName"></span></div>
+        </div>
+        <div class="lane">
+          <div class="clip audio" id="clipAudio"><canvas id="wave"></canvas><span class="clip-name" id="audioName">音频</span></div>
+        </div>
+        <div class="trim-keys" id="trimKeys"></div>
+        <div class="trim-shade" id="shadeL"></div>
+        <div class="trim-shade" id="shadeR"></div>
+        <div class="trim-range" id="trimRange"></div>
+        <div class="trim-handle in" id="trimStart" role="slider" tabindex="0" aria-label="入点"></div>
+        <div class="trim-handle out" id="trimEnd" role="slider" tabindex="0" aria-label="出点"></div>
+        <div class="playhead" id="trimHead"><i></i></div>
+      </div>
+      <div class="tl-empty" id="tlEmpty">截图没有时间轴</div>
+    </div>
+  </section>
+</div>
+<script type="module" src="player.js"></script>
+</body>
+</html>

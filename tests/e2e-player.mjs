@@ -1,0 +1,223 @@
+// 素材库修剪的端到端检查：在真实 Chromium 里加载扩展，把测试素材写进 IndexedDB，
+// 点按钮走完「修剪 → 另存 / 替换」，并确认成片在 <video> 里能播到头。
+// 用法：node tests/e2e-player.mjs <Chrome for Testing 可执行文件> [截图输出目录]
+//
+// 正式版 Chrome 137 起不再支持 --load-extension，必须用 Chrome for Testing / Chromium。
+// 不依赖任何库：直接走 DevTools 协议（Node 自带 WebSocket）。
+import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import assert from 'node:assert/strict';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, '..');
+const chrome = process.argv[2];
+const shotDir = process.argv[3];
+if (!chrome) { console.error('用法：node tests/e2e-player.mjs <chrome 路径> [截图目录]'); process.exit(2); }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ── 素材服务：扩展页面从这里 fetch 测试素材 ──
+const server = http.createServer((req, res) => {
+  res.setHeader('access-control-allow-origin', '*');
+  const f = path.join(here, 'fixtures', path.basename(new URL(req.url, 'http://x').pathname));
+  if (!fs.existsSync(f)) { res.statusCode = 404; res.end(); return; }
+  res.end(fs.readFileSync(f));
+});
+await new Promise((r) => server.listen(0, '127.0.0.1', r));
+const base = `http://127.0.0.1:${server.address().port}`;
+
+// ── 启动浏览器 ──
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trim-e2e-'));
+const proc = spawn(chrome, [
+  '--headless=new', `--user-data-dir=${profile}`, '--no-first-run', '--remote-debugging-port=0',
+  `--load-extension=${root}`, `--disable-extensions-except=${root}`, 'about:blank',
+], { stdio: 'ignore' });
+let port = null;
+for (let i = 0; i < 100 && !port; i++) {
+  await sleep(100);
+  try { port = fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]; } catch {}
+}
+assert.ok(port, '浏览器没有起来');
+
+let extId = null;
+for (let i = 0; i < 50 && !extId; i++) {
+  const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
+  const sw = targets.find((t) => t.type === 'service_worker' && t.url.endsWith('/src/background/service-worker.js'));
+  if (sw) extId = new URL(sw.url).host;
+  else await sleep(200);
+}
+assert.ok(extId, '扩展没有加载');
+
+// 扩展页面要由浏览器端 Target.createTarget 打开；/json/new 或 Page.navigate 过去会被拦成错误页
+const playerUrl = `chrome-extension://${extId}/src/player/player.html`;
+{
+  const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+  const bws = new WebSocket(webSocketDebuggerUrl);
+  await new Promise((r) => bws.addEventListener('open', r));
+  bws.send(JSON.stringify({ id: 1, method: 'Target.createTarget', params: { url: playerUrl } }));
+  await new Promise((r) => bws.addEventListener('message', r, { once: true }));
+  bws.close();
+}
+let page = null;
+for (let i = 0; i < 50 && !page; i++) {
+  page = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((t) => t.type === 'page' && t.url === playerUrl);
+  if (!page) await sleep(100);
+}
+assert.ok(page, '素材库页面没有打开');
+const ws = new WebSocket(page.webSocketDebuggerUrl);
+await new Promise((r) => ws.addEventListener('open', r));
+let seq = 0;
+const waiting = new Map();
+const consoleErrors = [];
+ws.addEventListener('message', (e) => {
+  const m = JSON.parse(e.data);
+  if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
+  if (m.method === 'Runtime.exceptionThrown') consoleErrors.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
+});
+const cdp = (method, params = {}) => new Promise((resolve, reject) => {
+  const id = ++seq;
+  waiting.set(id, (m) => (m.error ? reject(new Error(m.error.message)) : resolve(m.result)));
+  ws.send(JSON.stringify({ id, method, params }));
+});
+const evaluate = async (expr) => {
+  const r = await cdp('Runtime.evaluate', { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true });
+  if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
+  return r.result.value;
+};
+const waitFor = async (expr, label, ms = 15000) => {
+  for (const t0 = Date.now(); Date.now() - t0 < ms; await sleep(100)) {
+    if (await evaluate(`return !!(${expr});`)) return;
+  }
+  throw new Error(`等待超时：${label}`);
+};
+const shot = async (name) => {
+  if (!shotDir) return;
+  const { data } = await cdp('Page.captureScreenshot', { format: 'png' });
+  fs.mkdirSync(shotDir, { recursive: true });
+  fs.writeFileSync(path.join(shotDir, `${name}.png`), Buffer.from(data, 'base64'));
+};
+await cdp('Runtime.enable');
+await cdp('Page.enable');
+await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+
+// ── 写入测试素材：一条完成的 MP4、一条中断过的 WebM ──
+await waitFor(`document.readyState === 'complete'`, '页面加载');
+await evaluate(`
+  const db = await new Promise((res, rej) => { const r = indexedDB.open('browser-recorder', 1); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const put = (store, v) => new Promise((res, rej) => { const t = db.transaction(store, 'readwrite'); t.objectStore(store).put(v); t.oncomplete = res; t.onerror = () => rej(t.error); });
+  const fixtures = [
+    ['mp4', { id: 'rec_e2e_mp4', title: '演示 MP4', status: 'done', mode: 'tab', duration: 11996, createdAt: Date.now() - 60000 }],
+    ['webm-vp8', { id: 'rec_e2e_webm', title: '演示 WebM', status: 'interrupted', mode: 'screen', duration: 8000, createdAt: Date.now() - 120000 }],
+  ];
+  for (const [name, rec] of fixtures) {
+    const meta = await (await fetch('${base}/' + name + '.json')).json();
+    const ext = meta.mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
+    const buf = new Uint8Array(await (await fetch('${base}/' + name + '.' + ext)).arrayBuffer());
+    let o = 0;
+    for (const [i, n] of meta.chunkSizes.entries()) {
+      const blob = new Blob([buf.subarray(o, o + n)], { type: meta.mimeType.split(';')[0] });
+      await put('chunks', { recordingId: rec.id, seq: i, blob, size: n, ts: Date.now() });
+      o += n;
+    }
+    await put('recordings', { ...rec, mimeType: meta.mimeType.split(';')[0], size: buf.length, chunkCount: meta.chunkSizes.length, width: 640, height: 360 });
+  }
+  db.close();
+`);
+await evaluate(`location.href = location.pathname + '?id=rec_e2e_mp4';`);
+await sleep(500);
+await waitFor(`document.querySelectorAll('.item').length === 2 && !document.getElementById('stage').hidden`, '列表与播放区');
+
+const ui = {
+  /** 把视频跳到某秒再点按钮，等价于用户先拖播放进度再点「设为起点/终点」 */
+  async setEdge(edge, sec) {
+    await evaluate(`
+      const v = document.getElementById('video');
+      await new Promise((r) => { v.addEventListener('seeked', r, { once: true }); v.currentTime = ${sec}; });
+      document.getElementById('${edge === 'start' ? 'trimSetStart' : 'trimSetEnd'}').click();
+    `);
+  },
+  text: (id) => evaluate(`return document.getElementById('${id}').textContent;`),
+  async openTrim() {
+    await evaluate(`document.getElementById('trim').click();`);
+    await waitFor(`!document.getElementById('trimSave').disabled && document.querySelectorAll('#trimKeys i').length > 0`, '修剪条就绪');
+  },
+  /** 当前播放区的视频能完整播放：时长有限、能拖到末尾、没有解码错误 */
+  async playable() {
+    return evaluate(`
+      const v = document.getElementById('video');
+      if (v.readyState < 1) await new Promise((r) => v.addEventListener('loadedmetadata', r, { once: true }));
+      v.muted = true;
+      await new Promise((r) => { v.addEventListener('seeked', r, { once: true }); v.currentTime = Math.max(0, v.duration - 0.3); });
+      await v.play().catch(() => {});
+      await new Promise((r) => { v.addEventListener('ended', r, { once: true }); setTimeout(r, 3000); });
+      return { duration: v.duration, ended: v.ended, error: v.error && v.error.message, w: v.videoWidth };
+    `);
+  },
+};
+
+// 1. MP4：另存为新素材
+await ui.openTrim();
+await ui.setEdge('start', 5);
+await ui.setEdge('end', 9);
+const snap = await ui.text('trimSnap');
+console.log('起点对齐提示：', snap);
+assert.match(snap, /从 00:04\.19 开始/, '入点应往前对齐到 4.19 秒的关键帧');
+assert.equal(await ui.text('trimStartText'), '00:04.19');
+assert.equal(await ui.text('trimEndText'), '00:09.00');
+await shot('1-trim-panel');
+await evaluate(`document.getElementById('trimSave').click();`);
+await waitFor(`document.querySelectorAll('.item').length === 3 && document.getElementById('trimPanel').hidden`, '另存完成');
+const copy = await evaluate(`return { title: document.getElementById('title').value, meta: document.getElementById('stageMeta').textContent, url: location.search };`);
+console.log('新素材：', copy);
+assert.equal(copy.title, '演示 MP4（修剪）');
+assert.match(copy.meta, /修剪自「演示 MP4」/);
+const p1 = await ui.playable();
+console.log('新素材播放：', p1);
+assert.ok(!p1.error && p1.ended && Math.abs(p1.duration - 4.85) < 0.1, '修剪后的 MP4 应能播到头，时长约 4.85 秒');
+await shot('2-saved-copy');
+
+// 2. WebM（中断过）：替换原录像
+await evaluate(`[...document.querySelectorAll('.item')].find((el) => el.textContent.includes('演示 WebM')).click();`);
+await waitFor(`document.getElementById('title').value === '演示 WebM'`, '切到 WebM');
+await ui.openTrim();
+await ui.setEdge('start', 4);
+await evaluate(`window.confirm = () => true;`);
+await evaluate(`document.getElementById('trimReplace').click();`);
+await waitFor(`document.getElementById('trimPanel').hidden && !location.search.includes('rec_e2e_webm')`, '替换完成');
+const replaced = await evaluate(`
+  const items = [...document.querySelectorAll('.item')].map((el) => el.textContent.replace(/\\s+/g, ' ').trim());
+  return { title: document.getElementById('title').value, items, meta: document.getElementById('stageMeta').textContent };
+`);
+console.log('替换后：', replaced);
+assert.equal(replaced.title, '演示 WebM', '替换后标题不变');
+assert.equal(replaced.items.length, 3, '替换不增加条目');
+assert.ok(replaced.items.some((t) => t.includes('演示 WebM') && t.includes('已恢复')), '替换后保留「已恢复」标签');
+const p2 = await ui.playable();
+console.log('替换后播放：', p2);
+assert.ok(!p2.error && p2.ended && Math.abs(p2.duration - 4.1) < 0.2, '替换后的 WebM 应能播到头，时长约 4.1 秒');
+await shot('3-replaced');
+
+// 窄窗口（约 1000px）走纵向布局，截一张看排版
+await cdp('Emulation.setDeviceMetricsOverride', { width: 1000, height: 760, deviceScaleFactor: 1, mobile: false });
+await sleep(800);
+await evaluate(`document.getElementById('trim').click();`);
+await waitFor(`!document.getElementById('trimSave').disabled`, '窄屏修剪条');
+await shot('4-narrow');
+
+// 3. 原录像的分片确实删掉了
+const left = await evaluate(`
+  const db = await new Promise((res) => { const r = indexedDB.open('browser-recorder', 1); r.onsuccess = () => res(r.result); });
+  const keys = await new Promise((res) => { const r = db.transaction('chunks').objectStore('chunks').getAllKeys(); r.onsuccess = () => res(r.result); });
+  db.close();
+  return keys.filter((k) => k[0] === 'rec_e2e_webm').length;
+`);
+assert.equal(left, 0, '替换后原录像的分片应被删除');
+
+assert.deepEqual(consoleErrors, [], '页面上有未捕获的异常');
+console.log('✔ 端到端检查通过');
+ws.close();
+proc.kill();
+server.close();

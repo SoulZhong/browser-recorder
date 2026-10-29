@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>授权摄像头与麦克风</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: #101116; color: #e8eaf0; padding: 24px;
+    font: 400 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .card {
+    max-width: 460px; background: #191b22; border: 1px solid #2c3039;
+    border-radius: 16px; padding: 28px; text-align: center;
+  }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  p { color: #8d93a1; margin: 0 0 20px; }
+  button {
+    border: 0; border-radius: 11px; padding: 11px 20px; cursor: pointer;
+    background: #f03e4e; color: #fff; font: 600 14px/1 inherit;
+  }
+  button:hover { filter: brightness(1.08); }
+  .status { margin-top: 16px; font-size: 13px; min-height: 20px; }
+  .ok { color: #4ade80; }
+  .err { color: #ffb3ba; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>需要摄像头 / 麦克风权限</h1>
+    <p>授权一次即可。权限授予扩展本身，后续录制不会再向任何网站索要权限，音视频也不会离开这台设备。</p>
+    <button id="grant">授权并继续</button>
+    <div class="status" id="status"></div>
+  </div>
+  <script src="permission.js"></script>
+</body>
+</html>

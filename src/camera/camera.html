@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>camera</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #16171d; overflow: hidden; }
+  video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); display: block; }
+  .err {
+    display: grid; place-items: center; height: 100%; padding: 12px; text-align: center;
+    color: #cbd0da; font: 500 12px/1.5 -apple-system, "PingFang SC", sans-serif;
+  }
+</style>
+<body>
+  <video id="v" autoplay playsinline muted></video>
+  <script src="camera.js"></script>
+</body>

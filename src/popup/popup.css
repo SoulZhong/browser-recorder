@@ -1,0 +1,176 @@
+/* 录像操作台 —— 弹窗布局。
+   令牌与通用构件在 ../ui/theme.css，这里只放弹窗自己的排布。
+
+   高度预算（Chrome 弹窗上限 600px，超了才出滚动条）：
+     导轨 13 + 标题栏 48 + 页签 42 + 模式砖 69 + 输入源 73 + 旋钮 75 + 主按钮 36 + 存储 34 + 底距 12
+   = 402px；展开设备选择器 +35，出现报错 +40，最坏 ~477px。
+   不写 overflow:hidden——万一哪天算漏了，出滚动条也好过内容被裁掉看不见。 */
+
+body {
+  width: 328px;
+  padding: 0 13px 12px;
+  background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg) 220px);
+}
+
+/* 顶部那道细红线，像设备通电的指示条 */
+.rail {
+  height: 2px; margin: 0 -13px 11px;
+  background: linear-gradient(90deg, var(--accent), rgba(255, 59, 78, .12) 62%, transparent);
+}
+
+/* ── 标题栏 ── */
+.bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px; }
+.brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.brand-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.brand-text h1 { margin: 0; font-size: 13.5px; font-weight: 600; letter-spacing: .01em; }
+.brand-text p { margin: 2px 0 0; font-size: 10.5px; color: var(--muted); }
+
+/* ── 页签 ── */
+.seg {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; margin-bottom: 11px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+}
+.seg-btn {
+  border: 0; border-radius: 8px; padding: 6px 0; cursor: pointer;
+  background: transparent; color: var(--muted);
+  font: 500 12.5px/1 var(--font); transition: background .16s, color .16s;
+}
+.seg-btn:hover { color: var(--text); }
+.seg-btn[aria-selected="true"] {
+  background: var(--panel-2); color: var(--text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+}
+
+/* ── 其他标签页的录制 ──
+   控制条窗口撤掉后，这里是它们唯一的操作入口，所以每一路都要能单独结束。 */
+#others { margin-top: 11px; }
+.others-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 6px;
+}
+.others-head .link { padding: 2px 6px; }
+
+.rows {
+  max-height: 132px; overflow-y: auto;   /* 路数多了也不撑爆弹窗 */
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--panel);
+}
+.rows::-webkit-scrollbar { width: 6px; }
+.rows::-webkit-scrollbar-thumb { background: var(--panel-3); border-radius: 3px; }
+
+.row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; }
+.row + .row { border-top: 1px solid var(--line-soft); }
+.row:hover { background: var(--panel-2); }
+
+/* 标题必须能收缩（min-width:0），计时必须不收缩（flex:none）——
+   否则长标题会把计时挤出去或压在一起。 */
+.row .row-name {
+  flex: 1; min-width: 0; font-size: 11.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.row .row-time {
+  flex: none; font: 600 12px/1 var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.row .row-btn {
+  flex: none; border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+  border-radius: 7px; padding: 4px 8px; font: 500 11px/1 var(--font); cursor: pointer;
+}
+.row .row-btn:hover { background: var(--panel-3); }
+.row .row-btn.stop { border-color: var(--accent-line); color: var(--accent-text); }
+.row .row-btn.stop:hover { background: var(--accent-soft); }
+
+/* ── 模式砖 ── */
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 11px; }
+.tiles.three { grid-template-columns: repeat(3, 1fr); }
+.tile {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 9px 2px 8px; cursor: pointer; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+  transition: color .15s, background .15s, border-color .15s, box-shadow .15s;
+}
+.tile svg { width: 18px; height: 18px; }
+.tile span { font-size: 11px; letter-spacing: .01em; }
+.tile:hover { color: var(--text); background: var(--panel-2); }
+.tile[aria-pressed="true"] {
+  color: var(--text); border-color: var(--accent-line);
+  background: linear-gradient(180deg, rgba(255, 59, 78, .16), rgba(255, 59, 78, .06));
+  box-shadow: 0 0 0 1px rgba(255, 59, 78, .18), 0 3px 12px rgba(255, 59, 78, .14);
+}
+
+/* ── 输入源 ── */
+.group {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 8px 9px 9px; margin-bottom: 9px;
+}
+.group .glabel { margin-bottom: 7px; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 9px 5px 7px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel-2); color: var(--muted);
+  font: 500 11.5px/1 var(--font); transition: color .15s, background .15s, border-color .15s;
+}
+.chip svg { width: 13px; height: 13px; }
+.chip:hover { color: var(--text); border-color: #333947; }
+.chip[aria-pressed="true"] {
+  color: #FFD2D7; background: var(--accent-soft); border-color: var(--accent-line);
+}
+.devices { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
+.devices select:only-child { grid-column: 1 / -1; }
+
+/* ── 旋钮区 ── */
+.dials { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 11px; }
+.dials.two { grid-template-columns: repeat(2, 1fr); }
+.dials label {
+  display: flex; flex-direction: column; gap: 5px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 7px 8px 8px;
+}
+.dials label > span { font-size: 10px; letter-spacing: .12em; color: var(--muted); }
+
+/* ── 主按钮 ── */
+.go {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 11px; cursor: pointer;
+  border: 0; border-radius: var(--r);
+  background: linear-gradient(180deg, #FF4A5C, #E0293C);
+  color: #fff; font: 600 13.5px/1 var(--font);
+  box-shadow: 0 4px 14px rgba(255, 59, 78, .24), inset 0 1px 0 rgba(255, 255, 255, .18);
+  transition: filter .14s, box-shadow .14s;
+}
+.go:hover { filter: brightness(1.06); box-shadow: 0 5px 18px rgba(255, 59, 78, .32), inset 0 1px 0 rgba(255, 255, 255, .18); }
+.go:active { filter: brightness(.96); }
+.go:disabled { opacity: .5; cursor: default; box-shadow: none; }
+.go-dot { width: 9px; height: 9px; border-radius: 50%; background: #fff; }
+.go-dot.square { border-radius: 2px; }
+
+#error, #shotError { margin-top: 9px; }
+
+/* ── 录制中 ── */
+.deck {
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--line); border-radius: var(--r);
+  padding: 13px 14px 14px; margin-bottom: 9px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+}
+.deck-top { display: flex; align-items: center; gap: 7px; }
+.deck-label { font-size: 10.5px; letter-spacing: .14em; color: var(--muted); }
+.timer {
+  margin-top: 7px;
+  font: 600 31px/1 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: .01em;
+}
+.deck-meta { margin-top: 7px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.duo { display: grid; grid-template-columns: 1fr 1.35fr; gap: 7px; margin-bottom: 8px; }
+#cancel { display: block; width: 100%; text-align: center; }
+
+/* ── 存储条 ── */
+.meter { margin-top: 11px; }
+.meter-row {
+  display: flex; justify-content: space-between;
+  font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.meter .meter-bar { margin-top: 5px; }
