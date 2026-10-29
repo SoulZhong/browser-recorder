@@ -232,7 +232,7 @@ function box(type, ...parts) {
  * 开始时间不早于该轨道的起点偏移（起始片段里比关键帧早的音频），且早于终点。
  * 样本数据仍是原 mdat 的切片引用，不读进内存。
  */
-function rebuildFragment(blob, f, seq, shift, endSec) {
+function rebuildFragment(blob, f, seq, shift, endSec, offsetSec = 0, strictAudioEnd = false) {
   const kept = [];
   for (const t of f.trafs) {
     const from = shift.get(t.track.id);
@@ -241,7 +241,10 @@ function rebuildFragment(blob, f, seq, shift, endSec) {
     while (a < t.samples.length && ticks < from) { ticks += t.samples[a].duration; a++; }
     const startTicks = ticks;
     let b = a;
-    while (b < t.samples.length && sec(t, ticks) < endSec) { ticks += t.samples[b].duration; b++; }
+    while (b < t.samples.length && sec(t, ticks) < endSec) {
+      if (strictAudioEnd && !t.track.video && sec(t, ticks + t.samples[b].duration) > endSec) break;
+      ticks += t.samples[b].duration; b++;
+    }
     if (b === a) continue;
     const skip = t.samples.slice(0, a).reduce((n, x) => n + x.size, 0);
     const samples = t.samples.slice(a, b);
@@ -262,7 +265,7 @@ function rebuildFragment(blob, f, seq, shift, endSec) {
     const tfdt = new Uint8Array(20);
     const dv = view(tfdt);
     tfdt.set([0, 0, 0, 20, 0x74, 0x66, 0x64, 0x74, 1]);
-    dv.setBigUint64(12, BigInt(startTicks - shift.get(t.track.id)));
+    dv.setBigUint64(12, BigInt(startTicks - shift.get(t.track.id) + Math.round(offsetSec * t.track.timescale)));
 
     const rf = t.trunFlags;
     const per = ((rf & 0x100) ? 4 : 0) + ((rf & 0x200) ? 4 : 0) + ((rf & 0x400) ? 4 : 0) + ((rf & 0x800) ? 4 : 0);
@@ -338,7 +341,7 @@ function patchHeadDurations(bytes, moov, tracks, durationSec) {
  * @returns {{parts: Array<Blob|Uint8Array>, startMs: number, durationMs: number, videoFrames: number}}
  *   parts 直接拼成 Blob 即是结果；startMs 是实际起点（原时间轴）
  */
-export function trimMp4(blob, index, startMs, endMs) {
+export function trimMp4(blob, index, startMs, endMs, { offsetMs = 0, sequence = 1, strictAudioEnd = false } = {}) {
   const cut = [...index.cuts].reverse().find((c) => c.ms <= startMs + 0.5) || index.cuts[0];
   const first = index.fragments[cut.fragment];
 
@@ -350,7 +353,7 @@ export function trimMp4(blob, index, startMs, endMs) {
   const endSec = Math.min(endMs, index.durationMs) / 1000;
 
   const parts = [];
-  let seq = 1;
+  let seq = sequence;
   let lastSec = t0;
   let videoFrames = 0;
   const countVideo = (trafs) => { for (const t of trafs) if (t.track.video) videoFrames += t.samples.length; };
@@ -365,7 +368,7 @@ export function trimMp4(blob, index, startMs, endMs) {
       const mv = view(moof);
       mv.setUint32(f.seqOff, seq++);
       for (const t of f.trafs) {
-        const nt = t.baseTime - shift.get(t.track.id);
+        const nt = t.baseTime - shift.get(t.track.id) + Math.round(offsetMs / 1000 * t.track.timescale);
         if (t.tfdtVersion === 1) mv.setBigUint64(t.tfdtOff, BigInt(nt));
         else mv.setUint32(t.tfdtOff, nt);
       }
@@ -374,7 +377,7 @@ export function trimMp4(blob, index, startMs, endMs) {
       lastSec = videoEnd(f.trafs, lastSec);
       continue;
     }
-    const rebuilt = rebuildFragment(blob, f, seq, shift, endSec);
+    const rebuilt = rebuildFragment(blob, f, seq, shift, endSec, offsetMs / 1000, strictAudioEnd);
     if (rebuilt) {
       seq++;
       parts.push(...rebuilt.parts);
@@ -389,5 +392,25 @@ export function trimMp4(blob, index, startMs, endMs) {
   const head = index.head.bytes.slice(0, index.head.moov.start + index.head.moov.size);
   patchHeadDurations(head, index.head.moov, index.tracks, durationSec);
   // 只留 ftyp + moov；moov 之前若还有别的盒子（Chrome 不会写）一并保留不动
-  return { parts: [head, ...parts], startMs: t0 * 1000, durationMs: durationSec * 1000, videoFrames };
+  return { parts: [head, ...parts], startMs: t0 * 1000, durationMs: durationSec * 1000, videoFrames, nextSequence: seq };
+}
+
+/** 同一录像的多个保留区间：共用一个文件头，连续重排所有轨道的时间和片段序号。 */
+export function joinMp4(blob, index, kept) {
+  const parts = [];
+  const ranges = [];
+  let durationMs = 0;
+  let sequence = 1;
+  let videoFrames = 0;
+  for (const range of kept) {
+    const out = trimMp4(blob, index, range.startMs, range.endMs, { offsetMs: durationMs, sequence, strictAudioEnd: true });
+    parts.push(...out.parts.slice(1));
+    ranges.push({ startMs: out.startMs, endMs: out.startMs + out.durationMs, durationMs: out.durationMs });
+    durationMs += out.durationMs;
+    sequence = out.nextSequence;
+    videoFrames += out.videoFrames;
+  }
+  const head = index.head.bytes.slice(0, index.head.moov.start + index.head.moov.size);
+  patchHeadDurations(head, index.head.moov, index.tracks, durationMs / 1000);
+  return { parts: [head, ...parts], startMs: ranges[0].startMs, endMs: ranges.at(-1).endMs, durationMs, videoFrames, ranges };
 }

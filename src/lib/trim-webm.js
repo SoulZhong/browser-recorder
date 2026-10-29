@@ -175,7 +175,11 @@ export async function indexWebm(blob) {
   const unitMs = timecodeScale / 1_000_000;
   const cuts = [];
   const videoTimes = [];
+  const lastByTrack = new Map();
   clusters.forEach((c, ci) => c.blocks.forEach((b, bi) => {
+    const previous = lastByTrack.get(b.track);
+    if (previous) previous.duration = Math.max(0, b.time - previous.time);
+    lastByTrack.set(b.track, b);
     if (b.track !== videoTrack) return;
     videoTimes.push(b.time);
     if (b.key) cuts.push({ ms: b.time * unitMs, cluster: ci, block: bi, time: b.time });
@@ -261,7 +265,7 @@ const partSize = (p) => (p instanceof Blob ? p.size : p.length);
  * 按 [startMs, endMs) 截取。起点往前对齐到视频关键帧，终点之后的块丢掉。
  * @returns {{parts: Array<Blob|Uint8Array>, startMs: number, durationMs: number, videoFrames: number}}
  */
-export function trimWebm(blob, index, startMs, endMs) {
+export function trimWebm(blob, index, startMs, endMs, { offsetMs = 0, strictAudioEnd = false } = {}) {
   const { unitMs } = index;
   const cut = [...index.cuts].reverse().find((c) => c.ms <= startMs + 0.5) || index.cuts[0];
   const t0 = cut.time;
@@ -273,19 +277,22 @@ export function trimWebm(blob, index, startMs, endMs) {
     ...index.keep.map(([a, b]) => blob.slice(a, b)),
   ];
   let videoFrames = 0;
+  let lastVideo = null;
+  const offsetT = Math.round(offsetMs / unitMs);
 
   for (let ci = cut.cluster; ci < index.clusters.length; ci++) {
     const c = index.clusters[ci];
     if (c.blocks[0].time >= endT) break;
-    const tc = Math.max(0, c.tc - t0);
+    const tc = Math.max(0, c.tc - t0) + offsetT;
     const body = [];
     let run = null; // 连续的、不用改的块合成一个切片
     const flush = () => { if (run) { body.push(blob.slice(run[0], run[1])); run = null; } };
     c.blocks.forEach((b, bi) => {
       if (ci === cut.cluster && bi < cut.block) return;
       if (b.time < t0 || b.time >= endT) return;
-      if (b.track === index.videoTrack) videoFrames++;
-      const rel = b.time - t0 - tc;
+      if (strictAudioEnd && b.track !== index.videoTrack && b.time + (b.duration || 20 / unitMs) > endT) return;
+      if (b.track === index.videoTrack) { videoFrames++; lastVideo = b; }
+      const rel = b.time - t0 + offsetT - tc;
       if (rel < -0x8000 || rel > 0x7fff) unsupported('块时间码超出范围');
       if (rel === b.rel) {
         if (run && run[1] === b.start) run[1] = b.end;
@@ -307,7 +314,26 @@ export function trimWebm(blob, index, startMs, endMs) {
   return {
     parts,
     startMs: t0 * unitMs,
-    durationMs: Math.min(endMs, index.durationMs) - t0 * unitMs,
+    durationMs: strictAudioEnd
+      ? (lastVideo.time - t0 + Math.min(100 / unitMs, lastVideo.duration || Math.max(1, (index.durationMs / unitMs - lastVideo.time)))) * unitMs
+      : Math.min(endMs, index.durationMs) - t0 * unitMs,
     videoFrames,
   };
+}
+
+/** 同一录像只写一个 Segment 和 Tracks，后续区间的 Cluster 接在上一段末尾。 */
+export function joinWebm(blob, index, kept) {
+  const headerParts = 3 + index.keep.length;
+  const parts = [];
+  const ranges = [];
+  let durationMs = 0;
+  let videoFrames = 0;
+  for (const range of kept) {
+    const out = trimWebm(blob, index, range.startMs, range.endMs, { offsetMs: durationMs, strictAudioEnd: true });
+    parts.push(...(ranges.length ? out.parts.slice(headerParts) : out.parts));
+    ranges.push({ startMs: out.startMs, endMs: out.startMs + out.durationMs, durationMs: out.durationMs });
+    durationMs += out.durationMs;
+    videoFrames += out.videoFrames;
+  }
+  return { parts, startMs: ranges[0].startMs, endMs: ranges.at(-1).endMs, durationMs, videoFrames, ranges };
 }

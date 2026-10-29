@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { indexMedia, snapStart, trimMedia, TrimError } from '../src/lib/trim.js';
+import { indexMedia, snapStart, trimMedia, planCuts, cutMedia, TrimError } from '../src/lib/trim.js';
 
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'trim-test-'));
@@ -30,12 +30,11 @@ function load(name) {
 
 /** ffprobe 列出视频包：[{pts(秒), size, key}]，按显示时间排序。 */
 function videoPackets(file) {
-  const out = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v', '-show_entries',
-    'packet=pts_time,size,flags', '-of', 'csv=p=0', file], { encoding: 'utf8' });
-  return out.trim().split('\n').map((l) => {
-    const [pts, size, flags] = l.split(',');
-    return { pts: Number(pts), size: Number(size), key: flags.startsWith('K') };
-  }).sort((a, b) => a.pts - b.pts);
+  const out = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v', '-show_packets', '-show_data_hash', 'sha256', '-show_entries',
+    'packet=pts_time,size,flags,data_hash', '-of', 'json', file], { encoding: 'utf8' });
+  return JSON.parse(out).packets.map((p) => ({
+    pts: Number(p.pts_time), size: Number(p.size), key: p.flags.includes('K'), hash: p.data_hash,
+  })).sort((a, b) => a.pts - b.pts);
 }
 
 async function writeOut(blob, ext) {
@@ -48,18 +47,22 @@ async function writeOut(blob, ext) {
 function verifyWithFfmpeg(src, outFile, res) {
   const before = videoPackets(src.file);
   const after = videoPackets(outFile);
-  const s = res.startMs / 1000;
-  const e = res.endMs / 1000;
-  // 原片里落在 [实际起点, 实际终点) 的视频帧，就是成片应有的全部视频帧。
-  // 片段边界上 tfdt 和上一片段累计时长能差零点几毫秒，留 2ms 余量（极短的区间按比例缩）
-  const slack = Math.min(0.002, (e - s) / 2);
-  const expected = before.filter((p) => p.pts >= s - 0.002 && p.pts < e - slack);
+  let offset = 0;
+  const expected = (res.ranges || [res]).flatMap((range) => {
+    const s = range.startMs / 1000;
+    const e = range.endMs / 1000;
+    const slack = Math.min(0.002, (e - s) / 2);
+    const packets = before.filter((p) => p.pts >= s - 0.002 && p.pts < e - slack)
+      .map((p) => ({ ...p, pts: p.pts - s + offset }));
+    offset += range.durationMs / 1000;
+    return packets;
+  });
   assert.ok(after.length > 0, '成片没有视频帧');
   assert.ok(after[0].key, '成片第一帧不是关键帧');
   assert.ok(Math.abs(after[0].pts) < 0.002, `成片视频不是从 0 开始：${after[0].pts}`);
-  assert.deepEqual(after.map((p) => [p.size, p.key]), expected.map((p) => [p.size, p.key]), '视频帧和原片对应区间不一致');
+  assert.deepEqual(after.map((p) => [p.size, p.key, p.hash]), expected.map((p) => [p.size, p.key, p.hash]), '视频帧和原片对应区间不一致');
   for (let i = 0; i < after.length; i++) {
-    assert.ok(Math.abs(after[i].pts - (expected[i].pts - s)) < 0.002, `第 ${i} 帧时间不对`);
+    assert.ok(Math.abs(after[i].pts - expected[i].pts) < 0.002, `第 ${i} 帧时间不对`);
   }
   // 解码一遍。null 封装器对可变帧率会报 "non monotonically increasing dts"，那是它自己的换算，不是文件问题
   let log = '';
@@ -149,3 +152,66 @@ test('非法输入给出可读的错误，而不是崩溃', async () => {
   // 只有文件头、一帧都没有
   await assert.rejects(indexMedia(new Blob([src.buf.subarray(0, 1247)]), 'video/mp4'), TrimError);
 });
+
+test('删除范围合并，并向后对齐恢复播放的关键帧', () => {
+  const index = { durationMs: 10000, cuts: [0, 3000, 6000, 9000].map((ms) => ({ ms })) };
+  assert.deepEqual(planCuts(index, [{ startMs: 1000, endMs: 2000 }, { startMs: 2500, endMs: 4000 }]), {
+    removed: [{ startMs: 1000, endMs: 6000 }],
+    kept: [{ startMs: 0, endMs: 1000 }, { startMs: 6000, endMs: 10000 }],
+  });
+  assert.deepEqual(planCuts(index, [{ startMs: 8000, endMs: 9500 }]).kept, [{ startMs: 0, endMs: 8000 }]);
+  assert.deepEqual(planCuts(index, [{ startMs: 0, endMs: 10000 }]).kept, []);
+  assert.throws(() => planCuts(index, [{ startMs: NaN, endMs: 2000 }]), TrimError);
+  assert.throws(() => planCuts(index, [{ startMs: 3000, endMs: 2000 }]), TrimError);
+});
+
+for (const name of FIXTURES) {
+  test(`${name}：删除中间片段后无损拼接`, async (t) => {
+    const src = load(name);
+    const index = await indexMedia(src.blob, src.mimeType);
+    const k = index.cuts.map((c) => c.ms);
+    const cases = [
+      ['中间一段', [{ startMs: k[1] / 2, endMs: k[1] - 100 }]],
+      ['两次删除保留三段', [
+        { startMs: k[1] / 4, endMs: k[1] / 2 },
+        { startMs: (k[1] + k[2]) / 2, endMs: k[2] - 1 },
+      ]],
+      ['多段含重叠', [
+        { startMs: k[1] / 4, endMs: k[1] / 2 },
+        { startMs: k[1] / 3, endMs: k[1] - 100 },
+        { startMs: k[1] + 100, endMs: index.durationMs - 100 },
+      ]],
+      ['去掉片头片尾', [
+        { startMs: 0, endMs: k[1] - 100 },
+        { startMs: index.durationMs - 500, endMs: index.durationMs },
+      ]],
+    ];
+    for (const [label, removed] of cases) await t.test(label, async () => {
+      const res = await cutMedia(src.blob, index, removed);
+      assert.ok(res.durationMs > 0 && res.durationMs < index.durationMs);
+      assert.equal(res.ranges.length, planCuts(index, removed).kept.length);
+      const check = await indexMedia(res.blob, src.mimeType);
+      assert.ok(Math.abs(check.durationMs - res.durationMs) < 150);
+      if (hasFfmpeg) {
+        const out = await writeOut(res.blob, path.extname(src.file).slice(1));
+        verifyWithFfmpeg(src, out, res);
+        const audioPackets = (file) => JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_packets',
+          '-show_entries', 'packet=pts_time,duration_time', '-of', 'json', file], { encoding: 'utf8' })).packets;
+        const sourceAudio = audioPackets(src.file);
+        // MediaRecorder 的 WebM 原片本身有毫秒级音频时间抖动，拼接不能增加它。
+        const overlap = sourceAudio.slice(1).reduce((max, packet, i) => Math.max(max,
+          Number(sourceAudio[i].pts_time) + Number(sourceAudio[i].duration_time) - Number(packet.pts_time)), 0);
+        const audio = audioPackets(out);
+        for (let i = 1; i < audio.length; i++) {
+          assert.ok(Number(audio[i].pts_time) > Number(audio[i - 1].pts_time), '音频时间不能倒退');
+          assert.ok(Number(audio[i].pts_time) >= Number(audio[i - 1].pts_time) + Number(audio[i - 1].duration_time) - overlap - 0.002,
+            '拼接不能引入超过原片的音频时间重叠');
+        }
+      }
+      const again = await cutMedia(res.blob, check, [{ startMs: res.durationMs / 2, endMs: res.durationMs }]);
+      assert.ok(again.durationMs > 0 && again.durationMs < res.durationMs, '拼接结果应可继续编辑');
+    });
+    await assert.rejects(cutMedia(src.blob, index, [{ startMs: 0, endMs: index.durationMs }]), TrimError);
+    await assert.rejects(cutMedia(src.blob, index, []), TrimError);
+  });
+}
