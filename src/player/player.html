@@ -108,7 +108,7 @@
 
       <section class="insp-trim" id="trimPanel" hidden>
         <div class="sec-head">
-          <span class="glabel">修剪</span>
+          <span class="glabel" id="trimLabel">修剪</span>
           <span class="trim-chip">关键帧对齐 · 无损</span>
         </div>
         <dl class="props trim-props">
@@ -118,6 +118,11 @@
           <dt>预计大小</dt><dd class="num" id="trimSizeText">0 B</dd>
         </dl>
         <div class="msg warn" id="trimSnap" hidden></div>
+        <div id="cutControls" hidden>
+          <p class="cut-hint" id="cutHint"></p>
+          <button class="btn cut-remove" id="cutRemove">删除选区</button>
+          <div class="cut-list" id="cutList" aria-live="polite"></div>
+        </div>
         <div class="msg" id="trimMsg" hidden></div>
         <div class="trim-actions">
           <button class="btn primary" id="trimSave">另存为新素材</button>
@@ -143,12 +148,13 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12"/></svg>
         修剪
       </button>
+      <button class="tool" id="cut" aria-pressed="false" title="删除中间片段，将其余部分拼接保存" disabled>删除片段</button>
       <span class="tl-sep"></span>
       <button class="tool" id="trimSetStart" title="把入点设在播放头（I）" disabled><kbd>I</kbd>设入点</button>
       <button class="tool" id="trimSetEnd" title="把出点设在播放头（O）" disabled><kbd>O</kbd>设出点</button>
       <button class="tool" id="trimPreview" title="只播放入点到出点这一段" disabled>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8v14.4a1 1 0 001.5.9l11.3-7.2a1 1 0 000-1.8L8.5 3.9A1 1 0 007 4.8z"/></svg>
-        试看选区
+        <span id="trimPreviewText">试看选区</span>
       </button>
       <span class="tl-spacer"></span>
       <span class="tl-hint" id="tlHint">空格 播放 · ← → 微调 · I / O 设入出点</span>
@@ -168,6 +174,7 @@
           <div class="clip audio" id="clipAudio"><canvas id="wave"></canvas><span class="clip-name" id="audioName">音频</span></div>
         </div>
         <div class="trim-keys" id="trimKeys"></div>
+        <div class="cut-marks" id="cutMarks"></div>
         <div class="trim-shade" id="shadeL"></div>
         <div class="trim-shade" id="shadeR"></div>
         <div class="trim-range" id="trimRange"></div>

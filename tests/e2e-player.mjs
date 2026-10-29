@@ -111,6 +111,7 @@ await evaluate(`
   const fixtures = [
     ['mp4', { id: 'rec_e2e_mp4', title: '演示 MP4', status: 'done', mode: 'tab', duration: 11996, createdAt: Date.now() - 60000 }],
     ['webm-vp8', { id: 'rec_e2e_webm', title: '演示 WebM', status: 'interrupted', mode: 'screen', duration: 8000, createdAt: Date.now() - 120000 }],
+    ['webm-vp8', { id: 'rec_e2e_cut_webm', title: '拼接 WebM', status: 'interrupted', mode: 'screen', duration: 8000, createdAt: Date.now() - 180000 }],
   ];
   for (const [name, rec] of fixtures) {
     const meta = await (await fetch('${base}/' + name + '.json')).json();
@@ -128,7 +129,7 @@ await evaluate(`
 `);
 await evaluate(`location.href = location.pathname + '?id=rec_e2e_mp4';`);
 await sleep(500);
-await waitFor(`document.querySelectorAll('.item').length === 2 && !document.getElementById('stage').hidden`, '列表与播放区');
+await waitFor(`document.querySelectorAll('.item').length === 3 && !document.getElementById('stage').hidden`, '列表与播放区');
 
 const ui = {
   /** 把视频跳到某秒再点按钮，等价于用户先拖播放进度再点「设为起点/终点」 */
@@ -169,7 +170,7 @@ assert.equal(await ui.text('trimStartText'), '00:04.19');
 assert.equal(await ui.text('trimEndText'), '00:09.00');
 await shot('1-trim-panel');
 await evaluate(`document.getElementById('trimSave').click();`);
-await waitFor(`document.querySelectorAll('.item').length === 3 && document.getElementById('trimPanel').hidden`, '另存完成');
+await waitFor(`document.querySelectorAll('.item').length === 4 && document.getElementById('trimPanel').hidden`, '另存完成');
 const copy = await evaluate(`return { title: document.getElementById('title').value, meta: document.getElementById('stageMeta').textContent, url: location.search };`);
 console.log('新素材：', copy);
 assert.equal(copy.title, '演示 MP4（修剪）');
@@ -193,12 +194,67 @@ const replaced = await evaluate(`
 `);
 console.log('替换后：', replaced);
 assert.equal(replaced.title, '演示 WebM', '替换后标题不变');
-assert.equal(replaced.items.length, 3, '替换不增加条目');
+assert.equal(replaced.items.length, 4, '替换不增加条目');
 assert.ok(replaced.items.some((t) => t.includes('演示 WebM') && t.includes('已恢复')), '替换后保留「已恢复」标签');
 const p2 = await ui.playable();
 console.log('替换后播放：', p2);
 assert.ok(!p2.error && p2.ended && Math.abs(p2.duration - 4.1) < 0.2, '替换后的 WebM 应能播到头，时长约 4.1 秒');
 await shot('3-replaced');
+
+// 3. 删除中间片段：恢复选区、预览跳过删除部分，再拼接三段并另存。
+await evaluate(`[...document.querySelectorAll('.item')].find((el) => el.querySelector('.name').textContent === '演示 MP4').click();`);
+await waitFor(`document.getElementById('title').value === '演示 MP4'`, '切到原 MP4');
+await evaluate(`document.getElementById('cut').click();`);
+await waitFor(`!document.getElementById('cutControls').hidden && !document.getElementById('trimSetStart').disabled`, '删除片段模式');
+assert.equal(await evaluate(`return document.getElementById('cutRemove').disabled;`), true, '不能删除整条录像');
+assert.equal(await evaluate(`return document.getElementById('trimSave').disabled;`), true, '没有删除片段时不能保存');
+await ui.setEdge('end', 7);
+await ui.setEdge('start', 4.3);
+await evaluate(`document.getElementById('cutRemove').click();`);
+assert.equal(await evaluate(`return document.querySelectorAll('#cutMarks i').length;`), 1);
+await evaluate(`document.querySelector('#cutList button').click();`);
+assert.equal(await evaluate(`return document.querySelectorAll('#cutMarks i').length;`), 0, '恢复后应移除删除标记');
+await ui.setEdge('end', 7);
+await ui.setEdge('start', 4.3);
+await evaluate(`document.getElementById('cutRemove').click(); document.getElementById('trimPreview').click();`);
+await evaluate(`document.getElementById('video').currentTime = 4.25;`);
+await waitFor(`document.getElementById('video').currentTime >= 8.14`, '预览跳过删除片段');
+await evaluate(`document.getElementById('video').pause();`);
+await ui.setEdge('start', 10.1);
+await ui.setEdge('end', 11);
+await evaluate(`document.getElementById('cutRemove').click();`);
+assert.equal(await evaluate(`return document.querySelectorAll('#cutMarks i').length;`), 2);
+await shot('5-cut-segments');
+await evaluate(`document.getElementById('trimSave').click();`);
+await waitFor(`document.getElementById('title').value === '演示 MP4（剪辑）' && document.getElementById('trimPanel').hidden`, '拼接另存完成');
+const edited = await evaluate(`
+  const { getRecording } = await import('../lib/db.js');
+  const rec = await getRecording(new URLSearchParams(location.search).get('id'));
+  return { ranges: rec.trim.ranges, removed: rec.trim.removed, duration: rec.duration, original: (await getRecording('rec_e2e_mp4')).duration };
+`);
+assert.equal(edited.ranges.length, 3, '两次删除应拼接三个保留片段');
+assert.equal(edited.removed.length, 2);
+assert.equal(edited.original, 11996, '另存不得修改原录像');
+assert.ok(Math.abs(edited.duration - 6207) < 100);
+const joinedMp4 = await ui.playable();
+assert.ok(joinedMp4.ended && !joinedMp4.error && Math.abs(joinedMp4.duration - 6.207) < 0.1);
+await evaluate(`location.reload();`);
+await waitFor(`document.getElementById('title').value === '演示 MP4（剪辑）' && document.getElementById('video').readyState >= 2`, '刷新后拼接素材仍可读取');
+await shot('6-joined-mp4');
+
+// 4. WebM 拼接替换，保留原来的标题和中断状态。
+await evaluate(`[...document.querySelectorAll('.item')].find((el) => el.querySelector('.name').textContent === '拼接 WebM').click();`);
+await waitFor(`document.getElementById('title').value === '拼接 WebM'`, '切到待拼接 WebM');
+await evaluate(`document.getElementById('cut').click();`);
+await waitFor(`!document.getElementById('trimSetStart').disabled && !document.getElementById('cutControls').hidden`, 'WebM 剪辑就绪');
+await ui.setEdge('end', 5);
+await ui.setEdge('start', 4);
+await evaluate(`document.getElementById('cutRemove').click(); window.confirm = () => true; document.getElementById('trimReplace').click();`);
+await waitFor(`document.getElementById('trimPanel').hidden && !location.search.includes('rec_e2e_cut_webm')`, 'WebM 拼接替换完成');
+assert.equal(await ui.text('viewerName'), '拼接 WebM');
+const joinedWebm = await ui.playable();
+assert.ok(joinedWebm.ended && !joinedWebm.error && Math.abs(joinedWebm.duration - 3.931) < 0.1);
+console.log('拼接后的播放检查：', { mp4: joinedMp4, webm: joinedWebm });
 
 // 窄窗口（约 1000px）走纵向布局，截一张看排版
 await cdp('Emulation.setDeviceMetricsOverride', { width: 1000, height: 760, deviceScaleFactor: 1, mobile: false });

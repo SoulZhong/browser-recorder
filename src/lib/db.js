@@ -227,6 +227,7 @@ export async function saveTrimmed(src, result, { replace }) {
   const trim = {
     fromId: src.id, fromTitle: src.title, replaced: !!replace,
     startMs: result.startMs, endMs: result.endMs, at: Date.now(),
+    ...(result.ranges ? { ranges: result.ranges, removed: result.removed } : {}),
   };
   const content = { id, duration: result.durationMs, size: blob.size, chunkCount: seq, trim };
   // 缩略图取自原录像的画面，修剪后开头变了，丢掉让素材库重新生成
@@ -240,7 +241,7 @@ export async function saveTrimmed(src, result, { replace }) {
     rec = {
       ...rest,
       ...content,
-      title: `${src.title || '录制'}（修剪）`,
+      title: `${src.title || '录制'}（${result.removed ? '剪辑' : '修剪'}）`,
       status: STATUS.DONE,
       finishedAt: Date.now(),
     };

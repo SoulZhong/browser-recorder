@@ -182,6 +182,15 @@ input[type="checkbox"].pick:disabled { cursor: not-allowed; opacity: .35; }
 .sec-head { display: flex; align-items: center; justify-content: space-between; }
 .sec-head .glabel { color: var(--trim); }
 .trim-chip { font-size: 10.5px; color: var(--muted); }
+.cut-hint { margin: 0 0 8px; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.cut-remove { width: 100%; padding: 8px; color: var(--accent-text); border-color: var(--accent-line); }
+.cut-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.cut-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 10.5px; }
+.cut-row .num { color: var(--accent-text); }
+.cut-marks { position: absolute; inset: var(--ruler-h) 0 0; pointer-events: none; z-index: 2; display: none; }
+.cutting .cut-marks { display: block; }
+.cut-marks i { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, rgba(255,59,78,.35) 0 4px, rgba(0,0,0,.65) 4px 8px); border-inline: 1px solid var(--accent); }
+.cutting .trim-shade { display: none; }
 
 /* ── 时间轴 ── */
 .timeline { grid-area: tl; }

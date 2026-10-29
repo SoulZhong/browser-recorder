@@ -2,7 +2,7 @@ import {
   listRecordings, getRecording, assembleBlob, deleteRecording, deleteRecordings,
   patchRecording, storageEstimate, reconcileInterrupted, saveTrimmed,
 } from '../lib/db.js';
-import { indexMedia, snapStart, trimMedia } from '../lib/trim.js';
+import { indexMedia, snapStart, trimMedia, planCuts, cutMedia } from '../lib/trim.js';
 import { STATUS, MODE, MODE_LABEL, SHOT, SHOT_LABEL, KIND, kindOf, extOf, nameOf, IMAGE_FORMAT } from '../lib/constants.js';
 import { fmtDuration, fmtBytes, fmtDate, fmtStamp, safeFileName } from '../lib/format.js';
 
@@ -28,6 +28,8 @@ const els = {
   trimSizeText: $('trimSizeText'), trimSnap: $('trimSnap'), trimMsg: $('trimMsg'),
   trimSetStart: $('trimSetStart'), trimSetEnd: $('trimSetEnd'), trimPreview: $('trimPreview'),
   trimCancel: $('trimCancel'), trimReplace: $('trimReplace'), trimSave: $('trimSave'),
+  cut: $('cut'), cutControls: $('cutControls'), cutRemove: $('cutRemove'), cutList: $('cutList'),
+  cutHint: $('cutHint'), cutMarks: $('cutMarks'), trimLabel: $('trimLabel'), trimPreviewText: $('trimPreviewText'),
 };
 
 let recordings = [];
@@ -201,7 +203,7 @@ function renderList() {
     };
     if (TAGS[rec.status]) addTag('', TAGS[rec.status]);
     if (rec.warnings?.length) addTag('warn', ['有降级', rec.warnings.join('\n')]);
-    if (rec.trim && !rec.trim.replaced) addTag('info', ['修剪', `修剪自「${rec.trim.fromTitle || '未命名'}」`]);
+    if (rec.trim && !rec.trim.replaced) addTag('info', [rec.trim.removed ? '剪辑' : '修剪', `${rec.trim.removed ? '剪辑' : '修剪'}自「${rec.trim.fromTitle || '未命名'}」`]);
     row.addEventListener('click', () => select(rec.id));
     row.addEventListener('keydown', (e) => {
       if (e.target !== row) return;
@@ -327,6 +329,7 @@ function clearStage() {
   els.viewerSpec.textContent = '';
   els.crumb.textContent = '';
   els.trim.disabled = true;
+  els.cut.disabled = true;
   els.tlBody.classList.add('off');
 }
 
@@ -362,7 +365,7 @@ function renderInspector(rec) {
     n.textContent = text;
     els.stageMeta.appendChild(n);
   };
-  if (rec.trim && !rec.trim.replaced) note(`修剪自「${rec.trim.fromTitle || '未命名'}」`);
+  if (rec.trim && !rec.trim.replaced) note(`${rec.trim.removed ? '剪辑' : '修剪'}自「${rec.trim.fromTitle || '未命名'}」`);
   if (rec.status === STATUS.INTERRUPTED) note('录制曾被中断，这是已保存的部分', true);
   if (rec.status === STATUS.ERROR) note(rec.error || '分片写入失败，只保留了中断前的部分', true);
   for (const w of rec.warnings || []) note(w, true);
@@ -467,7 +470,11 @@ function drawPlayhead() {
   els.trimHead.style.left = pctOf(ms);
   els.tcNow.textContent = fmtTC(ms);
   els.tcDur.textContent = fmtTC(timelineMs());
-  if (trim?.previewing && ms >= trim.end) { els.video.pause(); trim.previewing = false; }
+  if (trim?.previewing && ms >= trim.previewRanges[trim.previewIndex].endMs) {
+    const next = trim.previewRanges[++trim.previewIndex];
+    if (next) seekTo(next.startMs);
+    else { els.video.pause(); trim.previewing = false; }
+  }
 }
 
 const RULER_STEPS = [100, 200, 500, 1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000, 300000, 600000, 900000, 1800000, 3600000];
@@ -513,10 +520,12 @@ function setupTimeline(rec) {
   if (isImage(rec)) {
     els.tlBody.classList.add('off');
     els.trim.disabled = true;
+    els.cut.disabled = true;
     return;
   }
   els.tlBody.classList.remove('off');
   els.trim.disabled = rec.status === STATUS.RECORDING;
+  els.cut.disabled = els.trim.disabled;
   els.clipName.textContent = rec.title || rec.id;
   els.audioName.textContent = '音频';
   renderRuler();
@@ -759,21 +768,30 @@ els.bulkDelete.addEventListener('click', async () => {
 /** 修剪会话：打开修剪时建立，切换素材/关闭时丢弃。blob 是分片的原样拼接，不带 duration 补丁。 */
 let trim = null;
 let trimOpening = null;
+let trimGeneration = 0;
+let openingMode = 'trim';
 const MIN_KEEP_MS = 100;
 
 function closeTrim() {
+  trimGeneration++;
   trim = null;
   trimOpening = null;
   els.trimPanel.hidden = true;
-  els.tlBody.classList.remove('trimming');
+  els.tlBody.classList.remove('trimming', 'cutting');
   els.trim.setAttribute('aria-pressed', 'false');
-  for (const b of [els.trimSetStart, els.trimSetEnd, els.trimPreview]) b.disabled = true;
+  els.cut.setAttribute('aria-pressed', 'false');
+  for (const b of [els.trimSetStart, els.trimSetEnd, els.trimPreview, els.cutRemove]) b.disabled = true;
   els.trimKeys.innerHTML = '';
+  els.cutMarks.innerHTML = '';
   if (current && !isImage(current)) { renderRuler(); drawPlayhead(); }
 }
 
 function trimBusy(on, text = '') {
-  for (const b of [els.trimSetStart, els.trimSetEnd, els.trimPreview, els.trimReplace, els.trimSave]) b.disabled = on;
+  if (trim) trim.busy = on;
+  for (const b of [els.trimSetStart, els.trimSetEnd, els.trimPreview, els.trimReplace, els.trimSave, els.cutRemove]) b.disabled = on;
+  els.trimCancel.disabled = on && !!trim;
+  for (const b of els.cutList.querySelectorAll('button')) b.disabled = on;
+  if (!on && trim) renderTrim();
   els.trimMsg.hidden = !text;
   els.trimMsg.className = 'msg warn';
   els.trimMsg.textContent = text;
@@ -791,6 +809,18 @@ function renderTrim() {
   const { index, start, end } = trim;
   const actual = snapStart(index, start);
   const D = index.durationMs;
+  const cutting = trim.mode === 'cut';
+  const plan = planCuts(index, trim.removed);
+  const keepMs = cutting ? plan.kept.reduce((n, range) => n + range.endMs - range.startMs, 0) : end - actual;
+  els.tlBody.classList.toggle('cutting', cutting);
+  els.cutControls.hidden = !cutting;
+  els.trimLabel.textContent = cutting ? '删除片段并拼接' : '修剪';
+  els.trimPreviewText.textContent = cutting ? '试看拼接' : '试看选区';
+  els.trimPreview.title = cutting ? '跳过已删除片段，预览拼接结果' : '只播放入点到出点这一段';
+  els.trimCancel.textContent = cutting ? '取消剪辑' : '取消修剪';
+  els.trim.setAttribute('aria-pressed', String(!cutting));
+  els.cut.setAttribute('aria-pressed', String(cutting));
+  els.trimSave.disabled = els.trimReplace.disabled = !!trim.busy || (cutting && !plan.removed.length);
   els.trimStart.style.left = pctOf(actual);
   els.trimEnd.style.left = pctOf(end);
   els.trimRange.style.left = pctOf(actual);
@@ -801,18 +831,47 @@ function renderTrim() {
   els.trimEnd.setAttribute('aria-valuetext', fmtTC(end));
   els.trimStartText.textContent = fmtTC(actual);
   els.trimEndText.textContent = fmtTC(end);
-  els.trimKeepText.textContent = fmtTC(end - actual);
-  els.trimSizeText.textContent = fmtBytes((current.size || trim.blob.size) * ((end - actual) / D));
+  els.trimKeepText.textContent = fmtTC(keepMs);
+  els.trimSizeText.textContent = fmtBytes((current.size || trim.blob.size) * (keepMs / D));
   // 偏差超过 0.1 秒才值得说
   const drift = start - actual;
   els.trimSnap.hidden = drift < 100;
   els.trimSnap.textContent = actual === 0 && index.cuts.length === 1
     ? '这段录像只有开头一个关键帧，入点只能在 00:00.00'
     : `入点对齐到关键帧：从 ${fmtTC(actual)} 开始，比所选的 ${fmtTC(start)} 早 ${(drift / 1000).toFixed(1)} 秒`;
+  if (cutting) {
+    const candidate = planCuts(index, [{ startMs: actual, endMs: end }]).removed[0];
+    const pending = planCuts(index, [...trim.removed, candidate]);
+    const boundary = candidate.endMs >= D ? '选区将删除至片尾。' : `选区将删除至 ${fmtTC(candidate.endMs)}，后半段从下一个关键帧接上。`;
+    els.cutHint.textContent = `${!pending.kept.length ? '请设定入点和出点，至少保留一段视频。' : boundary} 已删除 ${plan.removed.length} 段，保留 ${plan.kept.length} 段；保存时按原顺序拼接。`;
+    els.cutRemove.disabled = trim.busy || !pending.kept.length || JSON.stringify(pending.removed) === JSON.stringify(plan.removed);
+  }
+  els.cutList.replaceChildren();
+  els.cutMarks.replaceChildren();
+  plan.removed.forEach((range, i) => {
+    const mark = document.createElement('i');
+    mark.style.left = pctOf(range.startMs);
+    mark.style.width = `${(range.endMs - range.startMs) / D * 100}%`;
+    els.cutMarks.appendChild(mark);
+    const row = document.createElement('div');
+    row.className = 'cut-row';
+    const label = document.createElement('span');
+    label.className = 'num';
+    label.textContent = `${fmtTC(range.startMs)} – ${fmtTC(range.endMs)}`;
+    const restore = document.createElement('button');
+    restore.className = 'link';
+    restore.textContent = '恢复';
+    restore.setAttribute('aria-label', `恢复片段 ${i + 1}`);
+    restore.disabled = !!trim.busy;
+    restore.addEventListener('click', () => { if (trim && !trim.busy) { trim.removed.splice(i, 1); trim.previewing = false; renderTrim(); } });
+    row.append(label, restore);
+    els.cutList.appendChild(row);
+  });
 }
 
 function setTrimEdge(edge, ms) {
-  if (!trim) return;
+  if (!trim || trim.busy) return;
+  trim.previewing = false;
   const D = trim.index.durationMs;
   if (edge === 'start') trim.start = Math.max(0, Math.min(ms, trim.end - MIN_KEEP_MS));
   else trim.end = Math.min(D, Math.max(ms, snapStart(trim.index, trim.start) + MIN_KEEP_MS));
@@ -820,10 +879,15 @@ function setTrimEdge(edge, ms) {
 }
 
 /** 打开修剪：读出录像结构（关键帧位置）。I / O 快捷键也会走到这里。 */
-function openTrim() {
+function openTrim(mode = trim?.mode || 'trim') {
   if (!current || isImage(current) || current.status === STATUS.RECORDING) return null;
-  if (trim) return Promise.resolve(trim);
+  if (trim) {
+    if (!trim.busy) { trim.mode = mode; trim.previewing = false; renderTrim(); }
+    return Promise.resolve(trim);
+  }
+  openingMode = mode;
   if (trimOpening) return trimOpening;
+  const generation = ++trimGeneration;
   const rec = current;
   els.trim.setAttribute('aria-pressed', 'true');
   els.trimPanel.hidden = false;
@@ -832,8 +896,8 @@ function openTrim() {
     try {
       const blob = await assembleBlob(rec.id, { fixDuration: false });
       const index = await indexMedia(blob, rec.mimeType);
-      if (current?.id !== rec.id || !trimOpening) return null;   // 读的过程中切走或取消了
-      trim = { recId: rec.id, blob, index, start: 0, end: index.durationMs, previewing: false };
+      if (current?.id !== rec.id || generation !== trimGeneration) return null;
+      trim = { recId: rec.id, blob, index, start: 0, end: index.durationMs, previewing: false, mode: openingMode, removed: [] };
       els.trimKeys.innerHTML = '';
       for (const c of index.cuts) {
         const i = document.createElement('i');
@@ -850,30 +914,46 @@ function openTrim() {
       drawPlayhead();
       return trim;
     } catch (err) {
+      if (generation !== trimGeneration) return null;
       console.error('[recorder] 读取录像结构失败', err);
       trimFail(`无法修剪：${err.message}`);
       return null;
     } finally {
-      trimOpening = null;
+      if (generation === trimGeneration) trimOpening = null;
     }
   })();
   return trimOpening;
 }
 
-els.trim.addEventListener('click', () => { if (trim || trimOpening) closeTrim(); else openTrim(); });
+els.trim.addEventListener('click', () => { if (trim?.busy) return; if (trim?.mode === 'trim') closeTrim(); else openTrim('trim'); });
+els.cut.addEventListener('click', () => { if (trim?.busy) return; if (trim?.mode === 'cut') closeTrim(); else openTrim('cut'); });
+els.cutRemove.addEventListener('click', () => {
+  if (!trim || trim.busy) return;
+  const plan = planCuts(trim.index, [...trim.removed, { startMs: snapStart(trim.index, trim.start), endMs: trim.end }]);
+  if (!plan.kept.length) return;
+  trim.removed = plan.removed;
+  trim.start = 0;
+  trim.end = trim.index.durationMs;
+  trim.previewing = false;
+  renderTrim();
+});
 els.trimCancel.addEventListener('click', closeTrim);
 els.trimSetStart.addEventListener('click', () => setTrimEdge('start', nowMs()));
 els.trimSetEnd.addEventListener('click', () => setTrimEdge('end', nowMs()));
 els.trimPreview.addEventListener('click', () => {
   if (!trim) return;
-  seekTo(snapStart(trim.index, trim.start));
+  trim.previewRanges = trim.mode === 'cut' ? planCuts(trim.index, trim.removed).kept
+    : [{ startMs: snapStart(trim.index, trim.start), endMs: trim.end }];
+  if (!trim.previewRanges.length) return;
+  trim.previewIndex = 0;
+  seekTo(trim.previewRanges[0].startMs);
   trim.previewing = true;
   els.video.play().catch(() => {});
 });
 
 for (const [handle, edge] of [[els.trimStart, 'start'], [els.trimEnd, 'end']]) {
   handle.addEventListener('keydown', (e) => {
-    if (!trim || !['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+    if (!trim || trim.busy || !['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
     e.preventDefault();
     e.stopPropagation();
     // 入点只能落在关键帧上：方向键直接跳到上一个 / 下一个关键帧
@@ -891,23 +971,27 @@ for (const [handle, edge] of [[els.trimStart, 'start'], [els.trimEnd, 'end']]) {
 }
 
 async function saveTrim(replace) {
-  if (!trim || current?.id !== trim.recId) return;
+  if (!trim || trim.busy || current?.id !== trim.recId) return;
   const rec = current;
-  if (replace && !confirm(`用修剪结果替换「${rec.title}」？\n原录像将被永久删除，不可撤销。`)) return;
-  const { blob, index, start, end } = trim;
+  const action = trim.mode === 'cut' ? '剪辑' : '修剪';
+  if (replace && !confirm(`用${action}结果替换「${rec.title}」？\n原录像将被永久删除，不可撤销。`)) return;
+  const { blob, index, start, end, mode, removed } = trim;
+  const session = trim;
+  trim.previewing = false;
   els.video.pause();
-  trimBusy(true, '正在修剪…');
+  trimBusy(true, `正在${action}…`);
   try {
-    const result = await trimMedia(blob, index, start, end);
-    trimBusy(true, '正在保存…');
+    const result = mode === 'cut' ? await cutMedia(blob, index, removed) : await trimMedia(blob, index, start, end);
+    if (trim === session) trimBusy(true, '正在保存…');
     const saved = await saveTrimmed(rec, result, { replace });
-    closeTrim();
+    const showSaved = trim === session && current?.id === rec.id;
+    if (showSaved) closeTrim();
     if (replace) selected.delete(rec.id);
     await refresh();
-    await select(saved.id);
+    if (showSaved && current?.id === rec.id) await select(saved.id);
   } catch (err) {
     console.error('[recorder] 修剪失败', err);
-    trimFail(`修剪失败：${err.message}${replace ? '。原录像没有改动' : ''}`);
+    if (trim === session) trimFail(`${action}失败：${err.message}${replace ? '。原录像没有改动' : ''}`);
   }
 }
 
