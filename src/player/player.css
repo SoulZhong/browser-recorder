@@ -74,6 +74,7 @@ body { background: var(--well); overflow: hidden; }
 .pick-all { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11.5px; cursor: pointer; user-select: none; }
 .pick-all input { margin: 0; }
 .bulk { display: flex; gap: 6px; }
+.download-status { flex: none; padding: 7px 12px; color: var(--muted); font-size: 11.5px; border-bottom: 1px solid var(--line-soft); overflow-wrap: anywhere; }
 input[type="checkbox"].pick, #pickAll { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
 input[type="checkbox"].pick:disabled { cursor: not-allowed; opacity: .35; }
 

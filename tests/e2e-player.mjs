@@ -11,6 +11,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
@@ -31,10 +32,17 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 // ── 启动浏览器 ──
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trim-e2e-'));
+const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recorder-downloads-'));
+fs.mkdirSync(path.join(profile, 'Default'));
+fs.writeFileSync(path.join(profile, 'Default', 'Preferences'), JSON.stringify({
+  profile: { default_content_setting_values: { automatic_downloads: 2 } },
+  download: { prompt_for_download: false, default_directory: downloadDir },
+}));
 const proc = spawn(chrome, [
   '--headless=new', `--user-data-dir=${profile}`, '--no-first-run', '--remote-debugging-port=0',
   `--load-extension=${root}`, `--disable-extensions-except=${root}`, 'about:blank',
 ], { stdio: 'ignore' });
+process.on('exit', () => proc.kill());
 let port = null;
 for (let i = 0; i < 100 && !port; i++) {
   await sleep(100);
@@ -83,7 +91,7 @@ const cdp = (method, params = {}) => new Promise((resolve, reject) => {
   ws.send(JSON.stringify({ id, method, params }));
 });
 const evaluate = async (expr) => {
-  const r = await cdp('Runtime.evaluate', { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true });
+  const r = await cdp('Runtime.evaluate', { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true, userGesture: true });
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
   return r.result.value;
 };
@@ -130,6 +138,42 @@ await evaluate(`
 await evaluate(`location.href = location.pathname + '?id=rec_e2e_mp4';`);
 await sleep(500);
 await waitFor(`document.querySelectorAll('.item').length === 3 && !document.getElementById('stage').hidden`, '列表与播放区');
+
+// 禁止网页自动下载多个文件时，全选仍应下载全部素材；不能只验证下载函数被调用。
+await cdp('Browser.setDownloadBehavior', { behavior: 'default' });
+const downloadedFiles = () => fs.readdirSync(downloadDir).filter((name) => !name.endsWith('.crdownload'));
+const expectedHashes = await evaluate(`
+  const { listRecordings, assembleBlob } = await import('../lib/db.js');
+  const hashes = [];
+  for (const rec of await listRecordings()) {
+    const bytes = await (await assembleBlob(rec.id)).arrayBuffer();
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    hashes.push([...digest].map((n) => n.toString(16).padStart(2, '0')).join(''));
+  }
+  return hashes.sort();
+`);
+await evaluate(`document.getElementById('pickAll').click(); document.getElementById('bulkDownload').click();`);
+await waitFor(`!document.getElementById('bulkDownload').disabled`, '批量下载完成', 30000);
+assert.equal(downloadedFiles().length, 3, '全选 3 条视频，必须实际写出 3 个文件');
+assert.deepEqual(downloadedFiles().map((name) => createHash('sha256').update(fs.readFileSync(path.join(downloadDir, name))).digest('hex')).sort(), expectedHashes,
+  '下载文件必须与素材库中的每一条视频逐字节一致');
+await evaluate(`document.getElementById('bulkDownload').click();`);
+await waitFor(`!document.getElementById('bulkDownload').disabled`, '重复批量下载完成', 30000);
+assert.equal(downloadedFiles().length, 6, '重名文件应保留两份，不能覆盖或跳过');
+await evaluate(`document.getElementById('download').click();`);
+for (const start = Date.now(); downloadedFiles().length < 7 && Date.now() - start < 15000; await sleep(100)) {}
+assert.equal(downloadedFiles().length, 7, '单条下载也应正常完成');
+await cdp('Browser.setDownloadBehavior', { behavior: 'deny' });
+await evaluate(`document.getElementById('bulkDownload').click();`);
+await waitFor(`!document.getElementById('bulkDownload').disabled`, '浏览器拒绝下载后恢复操作', 30000);
+assert.match(await evaluate(`return document.getElementById('downloadStatus').textContent;`), /3 项失败/, '下载被拒绝时必须显示实际失败数');
+assert.equal(downloadedFiles().length, 7);
+await cdp('Browser.setDownloadBehavior', { behavior: 'default' });
+await evaluate(`document.getElementById('bulkDownload').click();`);
+await waitFor(`!document.getElementById('bulkDownload').disabled`, '失败后重试下载', 30000);
+assert.equal(downloadedFiles().length, 10, '失败之后仍可重新下载全部视频');
+console.log('✔ 批量下载：3 条全量、字节校验、重名保留、单条下载、拒绝后重试通过');
+await evaluate(`document.getElementById('pickAll').click();`);
 
 const ui = {
   /** 把视频跳到某秒再点按钮，等价于用户先拖播放进度再点「设为起点/终点」 */

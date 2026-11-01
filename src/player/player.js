@@ -3,6 +3,7 @@ import {
   patchRecording, storageEstimate, reconcileInterrupted, saveTrimmed,
 } from '../lib/db.js';
 import { indexMedia, snapStart, trimMedia, planCuts, cutMedia } from '../lib/trim.js';
+import { downloadBlob } from '../lib/download.js';
 import { STATUS, MODE, MODE_LABEL, SHOT, SHOT_LABEL, KIND, kindOf, extOf, nameOf, IMAGE_FORMAT } from '../lib/constants.js';
 import { fmtDuration, fmtBytes, fmtDate, fmtStamp, safeFileName } from '../lib/format.js';
 
@@ -19,6 +20,7 @@ const els = {
   usageText: $('usageText'), usageBar: $('usageBar'),
   listBar: $('listBar'), pickAll: $('pickAll'), pickText: $('pickText'),
   bulk: $('bulk'), bulkDownload: $('bulkDownload'), bulkDelete: $('bulkDelete'),
+  downloadStatus: $('downloadStatus'),
   tlBody: $('tlBody'), ruler: $('ruler'), filmstrip: $('filmstrip'), clipName: $('clipName'),
   wave: $('wave'), audioName: $('audioName'), clipAudio: $('clipAudio'),
   trim: $('trim'), trimPanel: $('trimPanel'), trimTrack: $('trimTrack'), trimKeys: $('trimKeys'),
@@ -81,13 +83,6 @@ const isImage = (rec) => kindOf(rec) === KIND.IMAGE;
 function fileNameOf(rec) {
   const ext = isImage(rec) ? imageExt(rec.mimeType) : extOf(rec.mimeType);
   return `${safeFileName(rec.title)}_${fmtStamp(rec.createdAt)}.${ext}`;
-}
-
-function triggerDownload(url, name) {
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.click();
 }
 
 /** 时间码：mm:ss.cc，超过一小时带上小时。监视器、时间轴、修剪面板共用一种写法。 */
@@ -661,9 +656,16 @@ els.trimTrack.addEventListener('pointerdown', (e) => {
 
 // ── 下载 / 复制 / 删除 ──
 
-els.download.addEventListener('click', () => {
-  if (!current || !currentUrl) return;
-  triggerDownload(currentUrl, fileNameOf(current));
+els.download.addEventListener('click', async () => {
+  if (!current) return;
+  const rec = current;
+  try {
+    await downloadBlob(await assembleBlob(rec.id), fileNameOf(rec));
+  } catch (err) {
+    console.error('[recorder] 下载失败', rec.id, err);
+    els.downloadStatus.hidden = false;
+    els.downloadStatus.textContent = `下载「${rec.title || '未命名'}」失败：${err.message}`;
+  }
 });
 
 els.copy.addEventListener('click', async () => {
@@ -718,27 +720,27 @@ els.bulkDownload.addEventListener('click', async () => {
   if (!targets.length || bulkBusy) return;
   bulkBusy = true;
   renderBulkBar();
-  // 逐条触发下载。第一次多文件下载 Chrome 会弹一次"允许此站点下载多个文件"，允许后不再问。
-  // 对象 URL 统一在最后释放：点击触发的下载是异步接手的，立刻 revoke 会拿到空文件。
-  const urls = [];
-  let failed = 0;
-  for (let i = 0; i < targets.length; i++) {
-    els.bulkDownload.textContent = `下载中 ${i + 1}/${targets.length}`;
-    try {
-      const url = URL.createObjectURL(await assembleBlob(targets[i].id));
-      urls.push(url);
-      triggerDownload(url, fileNameOf(targets[i]));
-      await sleep(300);
-    } catch (err) {
-      console.error('[recorder] 批量下载失败', targets[i].id, err);
-      failed++;
+  els.downloadStatus.hidden = false;
+  let completed = 0;
+  const failures = [];
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      els.bulkDownload.textContent = `下载中 ${i + 1}/${targets.length}`;
+      els.downloadStatus.textContent = `已下载 ${completed} / ${targets.length} 项`;
+      try {
+        await downloadBlob(await assembleBlob(targets[i].id), fileNameOf(targets[i]));
+        completed++;
+      } catch (err) {
+        console.error('[recorder] 批量下载失败', targets[i].id, err);
+        failures.push(`${targets[i].title || '未命名'}：${err.message}`);
+      }
     }
+    els.downloadStatus.textContent = `已下载 ${completed} / ${targets.length} 项${failures.length ? `，${failures.length} 项失败` : '，全部完成'}`;
+    els.downloadStatus.title = failures.join('\n');
+  } finally {
+    bulkBusy = false;
+    renderBulkBar();
   }
-  els.bulkDownload.textContent = failed ? `${failed} 项失败` : '已开始下载';
-  await sleep(1600);
-  for (const u of urls) URL.revokeObjectURL(u);
-  bulkBusy = false;
-  renderBulkBar();
 });
 
 els.bulkDelete.addEventListener('click', async () => {
