@@ -224,7 +224,7 @@
     };
 
     if (container) {
-      // 只截容器的内容区：clientLeft/Top 跳过边框，clientWidth/Height 不含滚动条
+      // 逐屏只取容器的内容区：clientLeft/Top 跳过边框，clientWidth/Height 不含滚动条
       const r = container.getBoundingClientRect();
       const clip = {
         x: Math.max(0, r.left + container.clientLeft),
@@ -232,7 +232,8 @@
         w: Math.min(container.clientWidth, viewW),
         h: Math.min(container.clientHeight, viewH),
       };
-      const totalH = Math.min(container.scrollHeight, maxCssH);
+      // 成图会带上容器外的壳子（顶栏、侧栏），所以高度上限要先扣掉壳子占的那部分
+      const totalH = Math.min(container.scrollHeight, Math.max(clip.h, maxCssH - (viewH - clip.h)));
       return { mode: 'element', totalH, viewH, viewW, clip, steps: stepsFor(totalH, clip.h), dpr };
     }
 

@@ -56,8 +56,13 @@ const MAX_CANVAS_SIDE = 32767;
  *
  * 按实际 y 逐屏往下画，重叠部分由后画的覆盖——页面到底时最后一屏没法再往下滚，
  * 必然和上一屏重叠，这样处理刚好正确，不需要单独算裁剪。
+ *
+ * 滚内部容器（mode === 'element'）时，容器外面的壳子——顶栏、侧栏、底栏——也要进图，
+ * 否则"整页"只剩中间那块内容。做法是把第一屏当成画框：容器上方原样保留，
+ * 容器下方的部分推到最底，中间多出来的高度里，容器内容逐屏填进去，
+ * 两侧的壳子用容器底边那一行像素往下延伸（侧栏的背景和分隔线自然接上）。
  */
-export async function stitchFullPage(slices, { totalH, viewW, viewH, clip }, format) {
+export async function stitchFullPage(slices, { mode, totalH, viewW, viewH, clip }, format) {
   if (!slices.length) throw new Error('没有可拼接的截图');
   clip ||= { x: 0, y: 0, w: viewW, h: viewH };
 
@@ -68,17 +73,40 @@ export async function stitchFullPage(slices, { totalH, viewW, viewH, clip }, for
   const sy = Math.max(0, Math.round(clip.y * scale));
   const sw = Math.max(1, Math.min(Math.round(clip.w * scale), first.width - sx));
   const sh = Math.max(1, Math.min(Math.round(clip.h * scale), first.height - sy));
-  const outW = sw;
-  const outH = Math.max(1, Math.min(Math.round(totalH * scale), MAX_CANVAS_SIDE));
+
+  const framed = mode === 'element';
+  // 容器内容比一屏多出来的高度：画框就是被它撑高的
+  const extra = framed ? Math.max(0, Math.round(totalH * scale) - sh) : 0;
+  const outW = framed ? first.width : sw;
+  const outH = Math.max(1, Math.min(
+    framed ? first.height + extra : Math.round(totalH * scale),
+    MAX_CANVAS_SIDE,
+  ));
+  // 容器内容在成图里的落点
+  const ox = framed ? sx : 0;
+  const oy = framed ? sy : 0;
 
   const canvas = new OffscreenCanvas(outW, outH);
   const ctx = canvas.getContext('2d');
 
+  if (framed) {
+    const below = first.height - (sy + sh);   // 容器下方壳子的高度
+    ctx.drawImage(first, 0, 0, first.width, sy + sh, 0, 0, first.width, sy + sh);
+    if (extra > 0) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(first, 0, sy + sh - 1, first.width, 1, 0, sy + sh, first.width, extra);
+      ctx.imageSmoothingEnabled = true;
+    }
+    if (below > 0) {
+      ctx.drawImage(first, 0, sy + sh, first.width, below, 0, sy + sh + extra, first.width, below);
+    }
+  }
+
   for (let i = 0; i < slices.length; i++) {
     const bmp = i === 0 ? first : await dataUrlToBitmap(slices[i].dataUrl);
-    const dy = Math.round(slices[i].y * scale);
+    const dy = oy + Math.round(slices[i].y * scale);
     // 最后一屏可能比剩余高度还高，画超出去也没关系，canvas 会自己裁掉
-    ctx.drawImage(bmp, sx, sy, sw, sh, 0, dy, sw, sh);
+    ctx.drawImage(bmp, sx, sy, sw, sh, ox, dy, sw, sh);
     bmp.close();
   }
 
